@@ -1,0 +1,124 @@
+volumes:
+  postgres_data:
+  media_volume:
+
+networks:
+  laughing_octo_pancake_backend:
+    external: true
+    name: laughing_octo_pancake_backend
+
+services:
+  nginx:
+    image: nginx:1.25
+    restart: unless-stopped
+    depends_on:
+      - django
+    env_file:
+      - .env
+    ports:
+      - "8000:80"
+    volumes:
+      - media_volume:/app/media
+      - ./dev_ops/nginx/local/nginx.conf:/etc/nginx/nginx.conf
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=laughing_octo_pancake
+      - POSTGRES_DB=laughing_octo_pancake
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - default
+      - laughing_octo_pancake_backend
+
+  django:
+    build:
+      context: .
+      dockerfile: dev_ops/django/Dockerfile
+      args:
+        UID: "${UID:-1000}"
+        GID: "${GID:-1000}"
+    image: ${DOCKER_IMAGE:-laughing_octo_pancake_django}
+    restart: unless-stopped
+    user: django
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ${PWD}:/app
+      - ./logs:/logs
+      - media_volume:/app/media
+    networks:
+      - default
+      - laughing_octo_pancake_backend
+
+  celery-worker:
+    image: ${DOCKER_IMAGE:-laughing_octo_pancake_django}
+    restart: unless-stopped
+    depends_on:
+      - django
+    env_file:
+      - .env
+    command: celery -A core worker -l INFO -E
+    volumes:
+      - ${PWD}:/app
+      - ./logs:/logs
+      - media_volume:/app/media
+    healthcheck:
+      test: ["CMD-SHELL", "true"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - default
+      - laughing_octo_pancake_backend
+
+  celery-beat:
+    image: ${DOCKER_IMAGE:-laughing_octo_pancake_django}
+    restart: unless-stopped
+    depends_on:
+      - django
+    env_file:
+      - .env
+    command: celery -A core beat -l INFO
+    volumes:
+      - ${PWD}:/app
+      - media_volume:/app/media
+  
+  monitoring-service:
+    image: ldnunespwf/dev-recruiting-challenge-monitor:latest
+    command: gunicorn -b 0.0.0.0:5000 main:app
+    restart: unless-stopped
+    networks:
+      - default
+      - laughing_octo_pancake_backend
+    volumes:
+      - /tmp/sqlite3:/app/sqlite3
+    ports:
+      - "5000:5000"
